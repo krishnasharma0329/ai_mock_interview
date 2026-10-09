@@ -691,9 +691,11 @@ ${transcript || "(the candidate did not answer any question)"}`;
   }
 });
 
-app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, mock: MOCK, provider: PROVIDER, model: PROVIDER === "groq" ? "groq (free tier)" : MODEL, ai: aiStatus, message: AI_MESSAGES[aiStatus] || null, accessCode: !!ACCESS_CODE }),
-);
+app.get("/api/health", async (_req, res) => {
+  // A check made while a serverless instance was starting can fail spuriously; re-check before reporting.
+  if (aiStatus === "unreachable" || aiStatus === "checking") await checkKey();
+  res.json({ ok: true, mock: MOCK, provider: PROVIDER, model: PROVIDER === "groq" ? "groq (free tier)" : MODEL, ai: aiStatus, message: AI_MESSAGES[aiStatus] || null, accessCode: !!ACCESS_CODE });
+});
 
 // Locally run a normal server; on Vercel the exported app becomes a serverless function.
 checkKey();
