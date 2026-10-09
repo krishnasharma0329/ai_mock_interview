@@ -1,0 +1,16 @@
+Rahul Verma — B.Tech Computer Science, VIT Vellore (2022–2026), CGPA 8.6
+Email: rahul.verma@example.com
+
+SKILLS: Java, Python, JavaScript, React, Node.js, Express, MySQL, MongoDB, Git, Docker, DSA
+
+EXPERIENCE
+Software Engineering Intern — FinEdge Payments (May–Jul 2025)
+- Built a REST microservice in Node.js for refund reconciliation; cut manual effort by 40%.
+- Wrote MySQL queries and indexes that reduced report generation time from 9s to 1.2s.
+
+PROJECTS
+CampusCart — React + Node.js marketplace for students; JWT auth, 1,200 users.
+PathFinder Visualizer — Java Swing visualizer for BFS, DFS, Dijkstra and A*.
+
+ACHIEVEMENTS
+LeetCode: 450+ problems solved (Knight badge). Smart India Hackathon 2024 finalist.

@@ -1,0 +1,23 @@
+{
+  "name": "mockmate-ai-interview",
+  "version": "1.0.0",
+  "description": "AI mock interviews with live company research, voice, cross-questioning and scorecards",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "mock": "MOCK_AI=1 node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.132.1",
+    "dotenv": "^18.0.6",
+    "express": "^5.2.1",
+    "groq-sdk": "^1.6.0",
+    "mammoth": "^1.13.0",
+    "multer": "^2.4.0",
+    "unpdf": "^1.8.1"
+  },
+  "type": "module"
+}

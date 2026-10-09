@@ -1,0 +1,7 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "mockmate", "runtimeExecutable": "npm", "runtimeArgs": ["start"], "port": 3000 },
+    { "name": "mockmate-mock", "runtimeExecutable": "npm", "runtimeArgs": ["run", "mock"], "port": 3000 }
+  ]
+}
