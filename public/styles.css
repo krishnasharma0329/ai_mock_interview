@@ -47,7 +47,7 @@ a { color: var(--primary); }
 .site-header { background: var(--surface); border-bottom: 1px solid var(--border); }
 .header-inner { height: 62px; display: flex; align-items: center; justify-content: space-between; }
 .logo { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; font-size: 14px; }
-.logo-mark { width: 32px; height: 32px; border-radius: 9px; background: var(--text); color: #fff; display: grid; place-items: center; }
+.logo-mark { width: 32px; height: 32px; border-radius: 9px; display: block; }
 .header-actions { display: flex; gap: 8px; }
 .tag { font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px; }
 .tag-amber { background: var(--warning-soft); color: var(--warning); }
