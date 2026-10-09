@@ -531,6 +531,9 @@ app.post("/api/session/:id/start", requireAI, async (req, res) => {
       if (!req.body?.consent) throw new Error("Please accept the data-saving consent on the previous screen to start.");
       try {
         s.recordId = await recordStart(s);
+        // Hand the record id to the browser right away, so the snapshot can be saved
+        // without waiting for (or depending on) the interviewer's first reply.
+        send({ type: "state", state: packSession(s) });
       } catch (e) {
         console.error("storage: could not create interview record:", e.message);
       }

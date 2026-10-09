@@ -774,20 +774,23 @@ function captureFrame() {
   c.getContext("2d").drawImage(v, 0, 0, w, h);
   return c.toDataURL("image/jpeg", 0.75);
 }
+/** Take one photo within ~10 seconds of joining and save it (retries until the camera and record are ready). */
 function scheduleSnapshot() {
   let tries = 0;
   const attempt = async () => {
     if (S.ended || S.snapshotSaved) return;
     const image = captureFrame();
-    if (image) {
+    if (image && S.state) {
       try {
         const r = await fetch(`/api/session/${S.sessionId}/snapshot`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ state: S.state, image }) });
-        if (r.ok) { S.snapshotSaved = true; return; }
+        const d = await r.json().catch(() => ({}));
+        if (r.ok && d.saved) { S.snapshotSaved = true; return; }
       } catch {}
     }
-    if (++tries < 4) setTimeout(attempt, 30000); // camera might be off right now; try again later
+    // Camera still starting, or the interview record isn't ready yet: try again shortly.
+    if (++tries < 20) setTimeout(attempt, tries < 4 ? 2000 : 15000);
   };
-  setTimeout(attempt, 20000);
+  setTimeout(attempt, 3000);
 }
 
 // ---------------------------------------------------------------- join
@@ -814,8 +817,8 @@ $("#joinBtn").addEventListener("click", async () => {
   show("interview");
   window.addEventListener("beforeunload", beforeUnload);
   startTimer();
-  await interviewerTurn(`/api/session/${S.sessionId}/start`, { consent: !!$("#consentCheck").checked });
   if (S.storage) scheduleSnapshot();
+  await interviewerTurn(`/api/session/${S.sessionId}/start`, { consent: !!$("#consentCheck").checked });
 });
 function beforeUnload(e) { if (!S.ended) { e.preventDefault(); e.returnValue = ""; } }
 
