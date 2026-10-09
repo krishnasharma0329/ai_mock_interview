@@ -3,7 +3,8 @@ import express from "express";
 import multer from "multer";
 import mammoth from "mammoth";
 import Anthropic from "@anthropic-ai/sdk";
-import { randomUUID } from "node:crypto";
+import { randomUUID, randomBytes, createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { gzipSync, gunzipSync } from "node:zlib";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as mock from "./mock.js";
@@ -98,12 +99,51 @@ async function streamMessage(params, attach) {
   }
 }
 const app = express();
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
-app.use(express.json({ limit: "2mb" }));
+// Vercel limits request bodies to ~4.5 MB, so resumes are capped at 4 MB.
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 4 * 1024 * 1024 } });
+app.use(express.json({ limit: "4mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
-/** In-memory sessions: id -> session */
-const sessions = new Map();
+// ---------- stateless sessions ----------
+// Serverless hosts (Vercel) don't keep memory between requests, so the whole interview state travels with
+// the browser as a signed, compressed token. The HMAC signature stops anyone from editing it.
+const SESSION_SECRET = process.env.SESSION_SECRET
+  ? Buffer.from(process.env.SESSION_SECRET)
+  : process.env.GROQ_API_KEY || process.env.ANTHROPIC_API_KEY
+    ? createHash("sha256").update(`mock-interviewer:${process.env.GROQ_API_KEY || process.env.ANTHROPIC_API_KEY}`).digest()
+    : randomBytes(32);
+const SESSION_TTL_MS = 12 * 3600 * 1000;
+const sign = (body) => createHmac("sha256", SESSION_SECRET).update(body).digest("base64url");
+
+function packSession(s) {
+  const { rollback, report, ...rest } = s;
+  const plain = { ...rest, covered: [...(s.covered || [])], visited: [...(s.visited || [])] };
+  const body = gzipSync(JSON.stringify(plain)).toString("base64url");
+  return `${body}.${sign(body)}`;
+}
+
+function unpackSession(token) {
+  if (typeof token !== "string" || !token.includes(".")) return null;
+  const [body, sig] = token.split(".");
+  const expected = Buffer.from(sign(body));
+  const given = Buffer.from(sig || "");
+  if (expected.length !== given.length || !timingSafeEqual(expected, given)) return null;
+  try {
+    const s = JSON.parse(gunzipSync(Buffer.from(body, "base64url")).toString("utf8"));
+    if (!s.createdAt || Date.now() - s.createdAt > SESSION_TTL_MS) return null;
+    s.covered = new Set(s.covered || []);
+    s.visited = new Set(s.visited || []);
+    return s;
+  } catch {
+    return null;
+  }
+}
+
+/** Finish a streamed response successfully, handing the updated interview state back to the browser. */
+function endOk(res, send, s) {
+  send({ type: "state", state: packSession(s) });
+  res.end();
+}
 const MANDATORY_TECH = MANDATORY_KEYS;
 const MANDATORY_LABELS = {
   ...SUBJECTS,
@@ -161,10 +201,12 @@ function apiErrorMessage(err) {
 }
 
 function getSession(req, res) {
-  const s = sessions.get(req.params.id);
-  if (!s) res.status(404).json({ error: "Session not found. Please start a new interview." });
+  const s = unpackSession(req.body?.state);
+  if (!s) res.status(400).json({ error: "This interview session has expired or is invalid. Please start a new interview." });
   return s;
 }
+
+const ACCESS_CODE = process.env.ACCESS_CODE?.trim() || "";
 
 // Testing aid only: INTERVIEW_CLOCK_SCALE=10 makes the interview clock run 10x faster.
 const CLOCK_SCALE = Number(process.env.INTERVIEW_CLOCK_SCALE) || 1;
@@ -226,6 +268,8 @@ function clockNote(s, extra = {}) {
 app.post("/api/session", upload.single("cv"), requireAI, async (req, res) => {
   try {
     const { name, role, company, type, difficulty } = req.body;
+    if (ACCESS_CODE && String(req.body.accessCode || "").trim() !== ACCESS_CODE)
+      return res.status(403).json({ error: "Wrong access code. Ask the person who shared this app for the code." });
     const duration = Number(req.body.duration);
     const allowed = type === "hr" ? [15, 20, 25] : [20, 25, 30];
     if (!name?.trim() || !role?.trim() || !company?.trim())
@@ -267,8 +311,11 @@ app.post("/api/session", upload.single("cv"), requireAI, async (req, res) => {
     if (PROVIDER === "groq" && !MOCK && cvText.length < 40)
       return res.status(400).json({ error: "We couldn't read any text from this resume (it may be a scanned image). Please upload a text-based PDF or a DOCX file." });
 
+    // Keep the session token small: use the extracted text instead of the raw PDF whenever possible.
+    if (cvText.length >= 200) cvBlock = { type: "text", text: `<candidate_cv>\n${cvText}\n</candidate_cv>` };
+
     const id = randomUUID();
-    sessions.set(id, {
+    const session = {
       id,
       config: { name: name.trim(), role: role.trim(), company: company.trim(), type, difficulty, duration },
       cvBlock,
@@ -282,8 +329,8 @@ app.post("/api/session", upload.single("cv"), requireAI, async (req, res) => {
       startedAt: null,
       createdAt: Date.now(),
       interviewer: INTERVIEWERS[Math.floor(Math.random() * INTERVIEWERS.length)],
-    });
-    res.json({ sessionId: id });
+    };
+    res.json({ sessionId: id, state: packSession(session) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -298,7 +345,7 @@ app.post("/api/session/:id/research", requireAI, async (req, res) => {
   try {
     if (MOCK) {
       await mock.research(s, send);
-      return res.end();
+      return endOk(res, send, s);
     }
     if (PROVIDER === "groq") {
       const plan = await groqResearch(s, send);
@@ -307,7 +354,7 @@ app.post("/api/session/:id/research", requireAI, async (req, res) => {
       if (filled.length) console.log("Plan gaps filled from problem bank:", filled.join(", "));
       s.plan = plan;
       send({ type: "plan", plan, sources: s.sources, interviewer: s.interviewer });
-      return res.end();
+      return endOk(res, send, s);
     }
     send({ type: "status", text: `Reading your CV and researching ${s.config.company}…` });
 
@@ -365,6 +412,7 @@ app.post("/api/session/:id/research", requireAI, async (req, res) => {
     normalizePlan(plan, s.config);
     s.plan = plan;
     send({ type: "plan", plan, sources: s.sources, interviewer: s.interviewer });
+    return endOk(res, send, s);
   } catch (err) {
     console.error("research error:", err);
     send({ type: "error", error: apiErrorMessage(err) });
@@ -480,12 +528,13 @@ app.post("/api/session/:id/start", requireAI, async (req, res) => {
     if (!s.startedAt) s.startedAt = Date.now();
     if (MOCK) {
       await mock.turn(s, null, send);
-      return res.end();
+      return endOk(res, send, s);
     }
     if (s.started) throw new Error("Interview already started.");
     startAgenda(s);
     const d = directive(s);
     await runInterviewerTurn(s, `${clockNote(s)}\n[The candidate ${s.config.name} has just joined the video call.]\n\n${d.text}`, send, d);
+    return endOk(res, send, s);
   } catch (err) {
     console.error("start error:", err);
     send({ type: "error", error: apiErrorMessage(err) });
@@ -505,19 +554,18 @@ app.post("/api/session/:id/turn", requireAI, async (req, res) => {
 
     if (MOCK) {
       await mock.turn(s, { answer, code }, send);
-      return res.end();
+      return endOk(res, send, s);
     }
 
-    const snapshot = JSON.stringify(s.ag);
     onAnswer(s, { answer, code }, minutesElapsed(s), s.config.duration);
-    s.rollback = () => (s.ag = JSON.parse(snapshot)); // undo the agenda move if this turn fails
     const d = directive(s);
     let text = `${clockNote(s, { latencySec: metrics.latencySec, via: metrics.via })}\n\nCandidate's answer:\n${answer.trim() || "(no spoken answer)"}`;
     if (code.trim()) text += `\n\nCandidate's ${language || "code"} submission:\n\`\`\`${language}\n${code.slice(0, 4000)}\n\`\`\``;
     text += `\n\n${d.text}`;
     await runInterviewerTurn(s, text, send, d);
+    return endOk(res, send, s);
   } catch (err) {
-    s.rollback?.();
+    // The browser keeps its previous state token, so a failed turn is automatically undone.
     console.error("turn error:", err.status || "", err.message?.slice(0, 200));
     send({ type: "error", error: apiErrorMessage(err) });
   }
@@ -562,7 +610,6 @@ function normalizeReport(r, c) {
 app.post("/api/session/:id/report", async (req, res) => {
   const s = getSession(req, res);
   if (!s) return;
-  if (s.report) return res.json({ report: s.report, sources: s.sources, config: s.config, covered: coveredInInterview(s), interviewer: s.interviewer });
   const { metrics: clientMetrics = {}, pendingAnswer = "", pendingCode = "", language = "" } = req.body || {};
   let covered;
   try {
@@ -645,19 +692,18 @@ ${transcript || "(the candidate did not answer any question)"}`;
 });
 
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, mock: MOCK, provider: PROVIDER, model: PROVIDER === "groq" ? "groq (free tier)" : MODEL, ai: aiStatus, message: AI_MESSAGES[aiStatus] || null }),
+  res.json({ ok: true, mock: MOCK, provider: PROVIDER, model: PROVIDER === "groq" ? "groq (free tier)" : MODEL, ai: aiStatus, message: AI_MESSAGES[aiStatus] || null, accessCode: !!ACCESS_CODE }),
 );
 
-// Drop sessions older than 6 hours.
-setInterval(() => {
-  const cutoff = Date.now() - 6 * 3600 * 1000;
-  for (const [id, s] of sessions) if (s.createdAt < cutoff) sessions.delete(id);
-}, 30 * 60 * 1000).unref();
+// Locally run a normal server; on Vercel the exported app becomes a serverless function.
+checkKey();
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`Mock Interviewer running at http://localhost:${PORT}`);
+    if (MOCK) console.log("⚠ DEMO MODE (MOCK_AI=1): questions are a fixed script and there is no real research. Use `npm start` for the real AI interviewer.");
+    else if (!HAS_KEY) console.log(`✗ ${AI_MESSAGES.missing}`);
+    else console.log(`Checking your ${PROVIDER === "groq" ? "Groq" : "Anthropic"} API key…`);
+  });
+}
 
-app.listen(PORT, () => {
-  checkKey();
-  console.log(`Mock Interviewer running at http://localhost:${PORT}`);
-  if (MOCK) console.log("⚠ DEMO MODE (MOCK_AI=1): questions are a fixed script and there is no real research. Use `npm start` for the real AI interviewer.");
-  else if (!HAS_KEY) console.log(`✗ ${AI_MESSAGES.missing}`);
-  else console.log(`Checking your ${PROVIDER === "groq" ? "Groq" : "Anthropic"} API key…`);
-});
+export default app;

@@ -50,6 +50,7 @@ async function checkHealth() {
   let h;
   try { h = await (await fetch("/api/health")).json(); } catch { h = { ai: "down" }; }
   S.ai = h.ai;
+  $("#accessField").classList.toggle("hidden", !h.accessCode);
   const el = $("#aiBanner");
   $("#mockBadge").classList.toggle("hidden", !h.mock);
   if (h.mock) {
@@ -98,7 +99,8 @@ function showError(el, msg) {
 
 /** POST and consume an NDJSON stream. */
 async function streamPost(url, body, onEvent) {
-  const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+  // The interview state token travels with every request (the server keeps nothing between requests).
+  const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...(body || {}), state: S.state }) });
   if (!res.ok || !res.body) {
     let msg = `Request failed (${res.status})`;
     try { msg = (await res.json()).error || msg; } catch {}
@@ -115,10 +117,14 @@ async function streamPost(url, body, onEvent) {
     while ((nl = buf.indexOf("\n")) >= 0) {
       const line = buf.slice(0, nl).trim();
       buf = buf.slice(nl + 1);
-      if (line) onEvent(JSON.parse(line));
+      if (line) handle(JSON.parse(line));
     }
   }
-  if (buf.trim()) onEvent(JSON.parse(buf));
+  if (buf.trim()) handle(JSON.parse(buf));
+  function handle(e) {
+    if (e.type === "state") S.state = e.state;
+    else onEvent(e);
+  }
 }
 
 // ================================================================ PAGE 1 — wizard
@@ -145,6 +151,7 @@ form.querySelectorAll('input[name="type"]').forEach((r) => r.addEventListener("c
 renderDurations();
 
 $("#next1").addEventListener("click", () => {
+  if (!$("#accessField").classList.contains("hidden") && !form.accessCode.value.trim()) { showError($("#err1"), "Please enter the access code."); form.accessCode.focus(); return; }
   for (const [k, label] of [["name", "your full name"], ["role", "the position"], ["company", "the company"]]) {
     if (!form[k].value.trim()) { showError($("#err1"), `Please enter ${label}.`); form[k].focus(); return; }
   }
@@ -160,7 +167,7 @@ const cvInput = $("#cvInput");
 function setCv(file) {
   if (!file) return;
   if (!/\.(pdf|docx|txt|md)$/i.test(file.name)) return showError($("#err2"), "Please upload a PDF, DOCX or TXT file.");
-  if (file.size > 10 * 1024 * 1024) return showError($("#err2"), "Your resume must be under 10 MB.");
+  if (file.size > 4 * 1024 * 1024) return showError($("#err2"), "Your resume must be under 4 MB.");
   const dt = new DataTransfer();
   dt.items.add(file);
   cvInput.files = dt.files;
@@ -190,6 +197,7 @@ $("#next2").addEventListener("click", async () => {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Could not start");
     S.sessionId = data.sessionId;
+    S.state = data.state;
     goStep(3);
     initDevices();
     runResearch();
@@ -816,7 +824,7 @@ async function loadReport(body) {
   $("#overlayTitle").textContent = "Interview complete";
   $("#overlayText").textContent = "Reviewing every answer and preparing your report…";
   try {
-    const res = await fetch(`/api/session/${S.sessionId}/report`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const res = await fetch(`/api/session/${S.sessionId}/report`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...body, state: S.state }) });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Could not create the report");
     cancelAnimationFrame(levelRAF);

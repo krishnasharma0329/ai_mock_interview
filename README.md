@@ -35,6 +35,19 @@ To use Claude instead, set `AI_PROVIDER=claude` and `ANTHROPIC_API_KEY=` in `.en
 
 `npm run mock` is a **demo mode** only for checking the UI: questions are a fixed script, answers are not analysed and no research is done.
 
+## Deploy on Vercel
+
+The app runs on Vercel with zero config (Express is auto-detected; `public/` is served from the CDN). Interview state travels with the browser as a signed token, so no database is needed.
+
+1. Go to https://vercel.com/new and import this GitHub repository (no build settings needed).
+2. Under **Environment Variables** add:
+   - `GROQ_API_KEY` — your Groq key (required)
+   - `SESSION_SECRET` — any long random string (recommended; signs the interview tokens)
+   - `ACCESS_CODE` — optional; if set, visitors must enter this code before starting, which protects your free Groq quota from strangers
+3. Click **Deploy**. Every push to `main` redeploys automatically.
+
+Limits on Vercel: resumes up to 4 MB; each request can run up to 5 minutes on the free Hobby plan (enough for the research step).
+
 ## How it works
 
 ```
