@@ -436,3 +436,6 @@ select.input { appearance: none; background-image: url("data:image/svg+xml,%3Csv
   box-shadow: var(--shadow-sm); position: relative; z-index: 1;
 }
 .credit b { color: var(--text-2); font-weight: 600; }
+
+.consent { display: flex; gap: 10px; align-items: flex-start; font-size: 13px; color: var(--text-2); line-height: 1.45; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); cursor: pointer; }
+.consent input { margin-top: 2px; accent-color: var(--primary); flex: none; }

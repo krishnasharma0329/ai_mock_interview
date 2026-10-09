@@ -48,6 +48,39 @@ The app runs on Vercel with zero config (Express is auto-detected; `public/` is 
 
 Limits on Vercel: resumes up to 4 MB; each request can run up to 5 minutes on the free Hobby plan (enough for the research step).
 
+## Saving interviews (Supabase) and the admin page
+
+Optional. When configured, each interview stores the candidate's details and resume text, one photo taken
+~20 seconds into the interview, and the final report + transcript. Candidates must tick a consent box before joining.
+
+1. Create a free project at https://supabase.com.
+2. Open **SQL Editor → New query**, paste this and click **Run**:
+
+```sql
+create table if not exists public.interviews (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz not null default now(),
+  completed_at timestamptz,
+  status text not null default 'in_progress',
+  name text, role text, company text,
+  interview_type text, difficulty text, duration_min int,
+  resume_text text, interviewer text,
+  snapshot_path text,
+  overall_score int, selection_probability int, verdict text,
+  report jsonb, transcript jsonb, metrics jsonb,
+  basic_report boolean default false
+);
+-- Only the server (secret key) may read or write; no public access.
+alter table public.interviews enable row level security;
+```
+
+3. Open **Project Settings → API Keys** and copy the **secret key** (`sb_secret_…`); copy the **Project URL** from **Project Settings → Data API**.
+4. Add to Vercel (**Settings → Environment Variables**) and/or your local `.env`:
+   `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, and `ADMIN_PASSWORD` (any strong password).
+5. Redeploy. The photo bucket is created automatically on first use.
+
+View everything at **`/admin`** (e.g. `https://your-app.vercel.app/admin`) — candidates list with photo, score and verdict; click one for the full report, transcript and resume. Interviews can be deleted from there.
+
 ## How it works
 
 ```
@@ -86,6 +119,8 @@ Report                  ◀──── JSON ──────  /report ── 
 ```
 server.js        Express API: sessions, research, interview turns, report (Claude path)
 groq.js          Groq provider: web-search research, JSON interview turns, report
+storage.js       Optional Supabase storage (details, snapshot, results) + admin queries
+public/admin.*   Password-protected admin page
 prompts.js       Researcher / interviewer / evaluator prompts and JSON schemas
 mock.js          Offline scripted mode for UI testing
 public/          index.html, styles.css, app.js (no build step)

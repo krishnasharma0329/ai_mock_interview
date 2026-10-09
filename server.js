@@ -9,6 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as mock from "./mock.js";
 import { buildBasicReport } from "./basic-report.js";
+import { storageEnabled, recordStart, recordSnapshot, recordResult, listInterviews, getInterview, deleteInterview } from "./storage.js";
 import { extractText, getDocumentProxy } from "unpdf";
 import { startAgenda, onAnswer, directive, afterTurn, coveredKeys, normalizePlan, fallbackQuestion } from "./agenda.js";
 import { groq, groqCheck, groqResearch, groqTurn, groqReport, groqErrorMessage } from "./groq.js";
@@ -526,6 +527,14 @@ app.post("/api/session/:id/start", requireAI, async (req, res) => {
   const send = ndjson(res);
   try {
     if (!s.startedAt) s.startedAt = Date.now();
+    if (storageEnabled && !s.recordId) {
+      if (!req.body?.consent) throw new Error("Please accept the data-saving consent on the previous screen to start.");
+      try {
+        s.recordId = await recordStart(s);
+      } catch (e) {
+        console.error("storage: could not create interview record:", e.message);
+      }
+    }
     if (MOCK) {
       await mock.turn(s, null, send);
       return endOk(res, send, s);
@@ -640,7 +649,9 @@ app.post("/api/session/:id/report", async (req, res) => {
       const left = { ...covered.problems };
       report.coding_review = (report.coding_review || []).filter((c) => left[c.kind]-- > 0);
       s.report = report;
-      return res.json({ report, sources: s.sources, config: s.config, covered, interviewer: s.interviewer });
+      return recordResult(s, report, { metrics: clientMetrics })
+        .catch((e) => console.error("storage: could not save result:", e.message))
+        .then(() => res.json({ report, sources: s.sources, config: s.config, covered, interviewer: s.interviewer }));
     };
 
     if (MOCK) return finalize(mock.report(s, clientMetrics));
@@ -683,6 +694,7 @@ ${transcript || "(the candidate did not answer any question)"}`;
       covered ||= coveredInInterview(s);
       const report = normalizeReport(buildBasicReport(s, clientMetrics), s.config);
       report.topic_scores = report.topic_scores.filter((t) => covered.topics.includes(t.topic));
+      await recordResult(s, report, { basic: true, metrics: clientMetrics }).catch((e) => console.error("storage: could not save result:", e.message));
       res.json({ report, basic: true, reason: apiErrorMessage(err), sources: s.sources, config: s.config, covered, interviewer: s.interviewer });
     } catch (e2) {
       console.error("basic report error:", e2);
@@ -691,10 +703,47 @@ ${transcript || "(the candidate did not answer any question)"}`;
   }
 });
 
+// ---------- 5. interview snapshot ----------
+
+app.post("/api/session/:id/snapshot", async (req, res) => {
+  const s = getSession(req, res);
+  if (!s) return;
+  if (!storageEnabled || !s.recordId) return res.json({ saved: false });
+  try {
+    await recordSnapshot(s.recordId, req.body?.image);
+    res.json({ saved: true });
+  } catch (e) {
+    console.error("storage: could not save snapshot:", e.message);
+    res.status(500).json({ error: "Could not save the snapshot." });
+  }
+});
+
+// ---------- 6. admin (password protected) ----------
+
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD?.trim() || "";
+function adminAuth(req, res, next) {
+  if (!storageEnabled) return res.status(503).json({ error: "Storage is not configured. Set SUPABASE_URL and SUPABASE_SECRET_KEY." });
+  if (!ADMIN_PASSWORD) return res.status(503).json({ error: "Set ADMIN_PASSWORD in the environment to use the admin page." });
+  const a = Buffer.from(String(req.get("x-admin-password") || ""));
+  const b = Buffer.from(ADMIN_PASSWORD);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return res.status(401).json({ error: "Wrong password." });
+  next();
+}
+app.get("/admin", (_req, res) => res.redirect("/admin.html"));
+app.get("/api/admin/interviews", adminAuth, async (_req, res) => {
+  try { res.json({ interviews: await listInterviews() }); } catch (e) { console.error("admin list:", e.message); res.status(500).json({ error: e.message }); }
+});
+app.get("/api/admin/interviews/:rid", adminAuth, async (req, res) => {
+  try { res.json({ interview: await getInterview(req.params.rid) }); } catch (e) { res.status(404).json({ error: "Interview not found." }); }
+});
+app.delete("/api/admin/interviews/:rid", adminAuth, async (req, res) => {
+  try { await deleteInterview(req.params.rid); res.json({ deleted: true }); } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get("/api/health", async (_req, res) => {
   // A check made while a serverless instance was starting can fail spuriously; re-check before reporting.
   if (aiStatus === "unreachable" || aiStatus === "checking") await checkKey();
-  res.json({ ok: true, mock: MOCK, provider: PROVIDER, model: PROVIDER === "groq" ? "groq (free tier)" : MODEL, ai: aiStatus, message: AI_MESSAGES[aiStatus] || null, accessCode: !!ACCESS_CODE });
+  res.json({ ok: true, mock: MOCK, provider: PROVIDER, model: PROVIDER === "groq" ? "groq (free tier)" : MODEL, ai: aiStatus, message: AI_MESSAGES[aiStatus] || null, accessCode: !!ACCESS_CODE, storage: storageEnabled });
 });
 
 // Locally run a normal server; on Vercel the exported app becomes a serverless function.

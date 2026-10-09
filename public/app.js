@@ -51,6 +51,9 @@ async function checkHealth() {
   try { h = await (await fetch("/api/health")).json(); } catch { h = { ai: "down" }; }
   S.ai = h.ai;
   $("#accessField").classList.toggle("hidden", !h.accessCode);
+  S.storage = !!h.storage;
+  $("#consentBox").classList.toggle("hidden", !S.storage);
+  updateJoin();
   const el = $("#aiBanner");
   $("#mockBadge").classList.toggle("hidden", !h.mock);
   if (h.mock) {
@@ -237,6 +240,7 @@ async function runResearch() {
   setCheck("cv", "active");
   $("#srcList").innerHTML = "";
   $("#srcFound").classList.add("hidden");
+  S.ready = false;
   $("#joinBtn").disabled = true;
   let sources = 0;
   try {
@@ -266,8 +270,8 @@ async function runResearch() {
         const trim = (t, n) => (t && t.length > n ? t.slice(0, n).replace(/\s+\S*$/, "") + "…" : t || "");
         $("#prepSummary").innerHTML = `<p><b>Your profile:</b> ${esc(trim(e.plan.candidate_summary, 220))}</p><p><b>${esc(c.company)}:</b> ${esc(trim(e.plan.company_insights, 240))}</p>`;
         $("#prepSummary").classList.remove("hidden");
-        $("#joinBtn").disabled = false;
-        $("#joinHint").textContent = "Use headphones for the best experience";
+        S.ready = true;
+        updateJoin();
       } else if (e.type === "error") {
         throw new Error(e.error);
       }
@@ -280,6 +284,13 @@ async function runResearch() {
     $("#retry3").onclick = runResearch;
   }
 }
+
+function updateJoin() {
+  const needConsent = S.storage && !$("#consentCheck").checked;
+  $("#joinBtn").disabled = !S.ready || needConsent;
+  $("#joinHint").textContent = !S.ready ? "Available once your interview is ready" : needConsent ? "Please accept the consent above to join" : "Use headphones for the best experience";
+}
+$("#consentCheck").addEventListener("change", updateJoin);
 
 // ---------------------------------------------------------------- devices
 let audioCtx, analyser, levelData, levelRAF;
@@ -751,6 +762,34 @@ function timeUp() {
   setTimeout(finish, 6000);
 }
 
+// ---------------------------------------------------------------- interview snapshot (stored only with consent)
+function captureFrame() {
+  const v = $("#selfVideo");
+  if (!S.camOn || !v.videoWidth) return null;
+  const w = Math.min(640, v.videoWidth);
+  const h = Math.round((v.videoHeight / v.videoWidth) * w);
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  c.getContext("2d").drawImage(v, 0, 0, w, h);
+  return c.toDataURL("image/jpeg", 0.75);
+}
+function scheduleSnapshot() {
+  let tries = 0;
+  const attempt = async () => {
+    if (S.ended || S.snapshotSaved) return;
+    const image = captureFrame();
+    if (image) {
+      try {
+        const r = await fetch(`/api/session/${S.sessionId}/snapshot`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ state: S.state, image }) });
+        if (r.ok) { S.snapshotSaved = true; return; }
+      } catch {}
+    }
+    if (++tries < 4) setTimeout(attempt, 30000); // camera might be off right now; try again later
+  };
+  setTimeout(attempt, 20000);
+}
+
 // ---------------------------------------------------------------- join
 $("#joinBtn").addEventListener("click", async () => {
   const c = S.config;
@@ -775,7 +814,8 @@ $("#joinBtn").addEventListener("click", async () => {
   show("interview");
   window.addEventListener("beforeunload", beforeUnload);
   startTimer();
-  await interviewerTurn(`/api/session/${S.sessionId}/start`, {});
+  await interviewerTurn(`/api/session/${S.sessionId}/start`, { consent: !!$("#consentCheck").checked });
+  if (S.storage) scheduleSnapshot();
 });
 function beforeUnload(e) { if (!S.ended) { e.preventDefault(); e.returnValue = ""; } }
 
